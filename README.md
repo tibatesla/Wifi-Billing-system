@@ -52,6 +52,7 @@ There is also a duplicate top-level `app/` package in the repository root that m
   - Registers routes:
     - `/api/v1/auth`
     - `/api/v1/mpesa`
+    - `/api/v1/admin`
   - Exposes `/health`
 
 ### Configuration
@@ -168,7 +169,7 @@ There is also a duplicate top-level `app/` package in the repository root that m
 
 ## Frontend
 
-The frontend is currently a starter Vite + React app with a simple sample page.
+The frontend is a Vite + React app scaffolding for the Wi-Fi Billing system.
 
 Key files:
 
@@ -178,14 +179,25 @@ Key files:
 - `frontend/src/main.tsx`
   - React app bootstrap
 - `frontend/src/App.tsx`
-  - Starter UI content
+  - Router configuration and public/admin route setup
+- `frontend/src/CaptivePortal.tsx`
+  - Customer captive portal and M-Pesa checkout flow
+- `frontend/src/AdminLogin.tsx`
+  - Admin login screen with session-based protection
+- `frontend/src/AdminDashboard.tsx`
+  - Admin dashboard with tenant dashboard stats and router management UI
 - `frontend/src/App.css`
   - Basic styling
 
 ### Current status
 
-- The frontend is not yet connected to backend APIs
-- No auth, payment flow, or tenant UI has been implemented yet
+- The frontend now includes:
+  - customer captive portal page
+  - admin login page
+  - protected admin dashboard route
+  - M-Pesa payment checkout flow in `CaptivePortal`
+  - admin dashboard tabbed interface for dashboard, routers, and settings
+- The frontend still needs backend API wiring for full production use.
 
 ---
 

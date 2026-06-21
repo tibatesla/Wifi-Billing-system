@@ -1,73 +1,57 @@
-# React + TypeScript + Vite
+# Frontend - Wi-Fi Billing System
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This frontend is a starter React + TypeScript + Vite application for the Wi-Fi Billing System project.
 
-Currently, two official plugins are available:
+The current UI is minimal and designed as a scaffold for building the admin portal, tenant dashboard, and payment flow.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Project Structure
 
-## React Compiler
+- `src/main.tsx` — React entrypoint that mounts the `App` component.
+- `src/App.tsx` — Root application component and starter UI.
+- `src/App.css` — Base styling for the starter page.
+- `src/index.css` — Global CSS styles.
+- `src/assets/` — Static images used by the starter page.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Dependencies
 
-## Expanding the ESLint configuration
+- `react`
+- `react-dom`
+- `vite`
+- `typescript`
+- `@vitejs/plugin-react`
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Local Development
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+Install dependencies and start the development server:
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Open the URL shown in the terminal to preview the app.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Build
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Build the production bundle with:
+
+```bash
+npm run build
 ```
+
+## Next Frontend Steps
+
+This frontend currently contains a placeholder page. Recommended next steps:
+
+1. Add API client utilities to call the backend `/api/v1` endpoints.
+2. Build auth flow using `/api/v1/auth/login`.
+3. Add routing for admin, tenant, and customer dashboards.
+4. Integrate payment initiation using `/api/v1/mpesa/stk-push`.
+5. Create forms for tenant/router/customer management.
+
+## Notes
+
+- The backend API is located under `backend/app/`.
+- The frontend is not yet connected to backend logic.
+- The current project is intended as a bootstrap for the Wi-Fi Billing SaaS platform.

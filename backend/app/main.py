@@ -2,8 +2,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# This imports routers handlers
-from app.api.v1.endpoints import mpesa, admin
+#
+from app.api.v1.endpoints import auth, mpesa, admin
 
 app = FastAPI(
     title="Wi-Fi Billing SaaS API",
@@ -23,6 +23,7 @@ app.add_middleware(
 # Register API Routers
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(mpesa.router, prefix="/api/v1/mpesa", tags=["M-Pesa Integration"])
+app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin Dashboard"])
 # app.include_router(routers.router, prefix="/api/v1/routers", tags=["Router Management"])
 
 @app.get("/health")
