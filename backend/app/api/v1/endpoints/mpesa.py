@@ -1,4 +1,6 @@
+import os
 import uuid
+import secrets
 from fastapi import APIRouter, Request, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,7 +13,6 @@ from app.db.models import Tenant, Plan, Transaction
 from app.services.mpesa_service import DarajaService
 from app.services.mikrotik_service import activate_customer_on_router
 
-# The JSON structure the backend expects from React
 from pydantic import BaseModel
 
 class STKPushRequest(BaseModel):
@@ -23,21 +24,19 @@ router = APIRouter()
 
 # 1. BACKGROUND TASK WORKER (INTERNAL)
 async def process_successful_payment(
+    tenant_id: str,
     phone: str, 
-    amount: float, 
-    receipt: str, 
-    checkout_request_id: str,
-    tenant_id: str
+    plan_id: str
 ):
     """
     Decoupled background worker. Executes concurrently *after* FastAPI replies '200 OK'.
     """
     try:
-        # Connect to MikroTik and immediately provision the customer
-        await activate_customer_on_router(tenant_id=tenant_id, phone=phone)
-        print(f"Background task complete: Verified {receipt} for {phone} under Tenant {tenant_id}")
+        # We now pass plan_id so the Mikrotik service knows WHICH speed profile to assign
+        await activate_customer_on_router(tenant_id=tenant_id, phone=phone, plan_id=plan_id)
+        print(f" Background task complete: Provisioned {phone} on Tenant {tenant_id}")
     except Exception as e:
-        print(f"Critical background processing error for checkout {checkout_request_id}: {str(e)}")
+        print(f"❌ Critical background processing error: {str(e)}")
 
 
 # 2. OUTBOUND: INITIATE PAYMENT (FROM CLIENT)
@@ -67,16 +66,17 @@ async def trigger_payment_request(
     if not plan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Selected Internet Plan not found")
 
-    # Instantiate Daraja Service
+    # Instantiate Daraja Service (Use env vars for global configs)
     mpesa_engine = DarajaService(
         consumer_key=tenant.daraja_consumer_key,
         consumer_secret=tenant.daraja_consumer_secret,
-        shortcode=tenant.daraja_shortcode or "174379", 
-        passkey="bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919" 
+        shortcode=tenant.daraja_shortcode or os.getenv("DARAJA_DEFAULT_SHORTCODE", "174379"), 
+        passkey=os.getenv("DARAJA_PASSKEY") 
     )
     
-    # EXACT NGROK URL - Properly indented
-    callback_endpoint = f"https://winfred-uncaned-jerri.ngrok-free.dev/api/v1/mpesa/callback/{tenant_id}"    
+    # Dynamically build webhook URL. Use env var in production, default to ngrok locally.
+    webhook_domain = os.getenv("WEBHOOK_DOMAIN", "https://winfred-uncaned-jerri.ngrok-free.dev")
+    callback_endpoint = f"{webhook_domain}/api/v1/mpesa/callback/{tenant_id}"    
     
     # Send request to Safaricom API
     result = await mpesa_engine.initiate_stk_push(
@@ -87,12 +87,13 @@ async def trigger_payment_request(
         transaction_desc=f"WiFi {plan.name}"
     )
     
-    if not result["success"]:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["error"])
+    if not result.get("success"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("error", "STK Push Failed"))
         
-    # Save a PENDING record into your transactions table
+    # Save a PENDING record WITH the plan_id
     new_tx = Transaction(
         tenant_id=tenant.id,
+        plan_id=plan.id,
         amount=plan.price,
         checkout_request_id=result["checkout_request_id"],
         status="PENDING"
@@ -103,7 +104,7 @@ async def trigger_payment_request(
     return {"message": "STK Push sent to phone", "checkout_id": result["checkout_request_id"]}
 
 
-# 3. INBOUND: WEBHOOK CALLBACK (FROM SAFARICOM)
+# 3. INBOUND: WEBHOOK CALLBACK FROM SAFARICOM
 @router.post("/callback/{tenant_id}")
 async def stk_push_callback(
     tenant_id: str,
@@ -119,41 +120,46 @@ async def stk_push_callback(
     result_code = stk_callback.get("ResultCode")
     checkout_request_id = stk_callback.get("CheckoutRequestID")
     
+    stmt = select(Transaction).where(Transaction.checkout_request_id == checkout_request_id)
+    result = await db.execute(stmt)
+    transaction = result.scalar_one_or_none()
+
+    if not transaction:
+        print(f" Orphaned Webhook: Checkout {checkout_request_id} not found.")
+        return {"ResultCode": 0, "ResultDesc": "Acknowledged but missing locally"}
+
     if result_code == 0:
         meta = stk_callback.get("CallbackMetadata", {}).get("Item", [])
         phone = next((i["Value"] for i in meta if i["Name"] == "PhoneNumber"), None)
-        amount = next((i["Value"] for i in meta if i["Name"] == "Amount"), None)
         receipt = next((i["Value"] for i in meta if i["Name"] == "MpesaReceiptNumber"), None)
         
-        # UPDATE THE DATABASE SO REACT STOPS POLLING
-        stmt = select(Transaction).where(Transaction.checkout_request_id == checkout_request_id)
-        result = await db.execute(stmt)
-        transaction = result.scalar_one_or_none()
+        # 1. Update State
+        transaction.status = "COMPLETED"
+        transaction.mpesa_receipt = receipt
         
-        if transaction:
-            transaction.status = "COMPLETED"
-            await db.commit()
-            print(f"✅ Payment {receipt} recorded as COMPLETED in database.")
+        # 2. Generate the Zero-Cost Transfer PIN (6-digit alphanumeric string)
+        transfer_pin = secrets.token_hex(3).upper() 
+        transaction.transfer_pin = transfer_pin
 
-        # Hand off the MikroTik connection to the background worker
+        await db.commit()
+        print(f" Payment {receipt} recorded. PIN generated: {transfer_pin}")
+
+        # 3. Hand off to the MikroTik background worker
         background_tasks.add_task(
             process_successful_payment, 
-            str(phone), float(amount), str(receipt), str(checkout_request_id), tenant_id
+            tenant_id=tenant_id,
+            phone=str(phone),
+            plan_id=str(transaction.plan_id)
         )
     else:
-        stmt = select(Transaction).where(Transaction.checkout_request_id == checkout_request_id)
-        result = await db.execute(stmt)
-        transaction = result.scalar_one_or_none()
-        
-        if transaction:
-            transaction.status = "FAILED"
-            await db.commit()
+        transaction.status = "FAILED"
+        await db.commit()
         print(f"❌ M-Pesa transaction {checkout_request_id} failed with code {result_code}")
         
     return {"ResultCode": 0, "ResultDesc": "Callback Processed Successfully"}
 
 
-# 4. INBOUND: STATUS POLLING (FROM CLIENT)
+# 4. INBOUND: STATUS POLLING FROM CLIENT
 @router.get("/status/{checkout_request_id}")
 async def check_transaction_status(
     checkout_request_id: str,
@@ -172,4 +178,8 @@ async def check_transaction_status(
             detail="Transaction not found in the system."
         )
 
-    return {"status": transaction.status}
+    return {
+        "status": transaction.status,
+        "receipt": transaction.mpesa_receipt,
+        "transfer_pin": transaction.transfer_pin
+    }

@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy import String, Integer, Numeric, DateTime, ForeignKey, UniqueConstraint, Index
+
+from sqlalchemy import String, Integer, Numeric, DateTime, ForeignKey, UniqueConstraint, Index, Boolean
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
@@ -62,7 +63,7 @@ class Plan(Base):
     price: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     speed_limit: Mapped[str] = mapped_column(String(50), nullable=False) 
     validity_hours: Mapped[int] = mapped_column(Integer, nullable=False)
-    mikrotik_profile_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    mikrotik_profile_name: Mapped[str] = mapped_column(String(100), nullable=False, default="default")
 
     tenant: Mapped["Tenant"] = relationship(back_populates="plans")
 
@@ -105,9 +106,22 @@ class Transaction(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("customers.id"), index=True)
     
+    #  Link the transaction to the plan being purchased
+    plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("plans.id"), index=True)
+    
     amount: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     checkout_request_id: Mapped[str] = mapped_column(String(100), unique=True, index=True) 
     mpesa_receipt: Mapped[Optional[str]] = mapped_column(String(50), unique=True)
     status: Mapped[str] = mapped_column(String(50), default="PENDING") 
     
+    #  Zero-Cost Device Transfer Columns 
+    transfer_pin: Mapped[Optional[str]] = mapped_column(String(6), unique=True, index=True)
+    authorized_mac: Mapped[Optional[str]] = mapped_column(String(17)) 
+    is_transferred: Mapped[bool] = mapped_column(Boolean, default=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=get_utc_now)
+
+    # Relationships mapped for ease of querying later
+    tenant: Mapped["Tenant"] = relationship()
+    customer: Mapped[Optional["Customer"]] = relationship()
+    plan: Mapped[Optional["Plan"]] = relationship()

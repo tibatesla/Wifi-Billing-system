@@ -1,76 +1,88 @@
 import asyncio
 import routeros_api
-from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
+
 from sqlalchemy import select
-import uuid
+# Ensure you import your async session factory, not the FastAPI dependency
+from app.db.session import async_session_maker 
+from app.db.models import Router, Plan
 
-from app.db.models import Router
+#  SYNCHRONOUS CORE OPERATION
 
-# SYNCHRONOUS CORE OPERATIONS
-
-def _connect_to_router(host: str, username: str, password: str, port: int = 8728):
+def _connect_to_router(host: str, username: str, password: str, port: int):
     """Establishes the synchronous socket connection to the router."""
-    # NIn production, switch plaintext_login to False and use API-SSL (port 8729)
+    use_ssl = True if port == 8729 else False
+    
     connection = routeros_api.RouterOsApiPool(
         host=host,
         username=username,
         password=password,
         port=port,
+        use_ssl=use_ssl,
         plaintext_login=True 
     )
     return connection
 
-def _sync_activate_hotspot_user(host, user, pwd, port, customer_phone, plan_profile):
-    """Creates or un-suspends a hotspot user and assigns their bandwidth profile."""
+def _sync_activate_hotspot_user(host, user, pwd, port, phone, profile_name, validity_hours):
+    """Idempotently creates/updates a user and delegates expiration to the router."""
     connection = _connect_to_router(host, user, pwd, port)
     api = connection.get_api()
     
     try:
         hotspot_users = api.get_resource('/ip/hotspot/user')
+        active_users = api.get_resource('/ip/hotspot/active')
         
-        # Check if user already exists (Idempotency)
-        existing_user = hotspot_users.get(name=customer_phone)
+        uptime_limit = f"{validity_hours}h"
+        existing_user = hotspot_users.get(name=phone)
         
         if existing_user:
-            # User exists: Un-disable them and update their profile/speed limit
             user_id = existing_user[0]['id']
-            hotspot_users.set(id=user_id, disabled='no', profile=plan_profile)
-        else:
-            # New User: Create them. We use phone number for both name and password
-            hotspot_users.add(
-                server='all', 
-                name=customer_phone, 
-                password=customer_phone, 
-                profile=plan_profile
+            hotspot_users.set(
+                id=user_id, 
+                disabled='no', 
+                profile=profile_name, 
+                **{'limit-uptime': uptime_limit}
             )
-        return True
+            # Reset counters so they get their full purchased time
+            hotspot_users.set(id=user_id, **{'bytes-in': '0', 'bytes-out': '0', 'uptime': '0s'})
+        else:
+            hotspot_users.add(
+                server='all',
+                name=phone, 
+                password=phone, 
+                profile=profile_name, 
+                **{'limit-uptime': uptime_limit}
+            )
+
+        # Kick the active session to force re-authentication with new speeds
+        active_sessions = active_users.get(user=phone)
+        for session in active_sessions:
+            active_users.remove(id=session['id'])
+
     except Exception as e:
         print(f"RouterOS API Error (Activation): {str(e)}")
-        raise
+        raise RuntimeError(f"RouterOS API Failure: {str(e)}")
     finally:
         connection.disconnect()
 
-def _sync_suspend_hotspot_user(host, user, pwd, port, customer_phone):
-    """Disables the hotspot user and forcibly drops their active internet session."""
+def _sync_suspend_hotspot_user(host, user, pwd, port, phone):
+    """Manually disables a user (Used for admin bans or device PIN transfers)."""
     connection = _connect_to_router(host, user, pwd, port)
     api = connection.get_api()
     
     try:
-        # 1. Disable the account so they cannot log back in
         hotspot_users = api.get_resource('/ip/hotspot/user')
-        existing_user = hotspot_users.get(name=customer_phone)
+        existing_user = hotspot_users.get(name=phone)
         
         if existing_user:
             hotspot_users.set(id=existing_user[0]['id'], disabled='yes')
             
-        # 2. Kick them off immediately (Kill active session)
         active_sessions = api.get_resource('/ip/hotspot/active')
-        active_user = active_sessions.get(user=customer_phone)
+        active_user = active_sessions.get(user=phone)
         
         for session in active_user:
             active_sessions.remove(id=session['id'])
             
-        return True
     except Exception as e:
         print(f"RouterOS API Error (Suspension): {str(e)}")
         raise
@@ -83,9 +95,7 @@ def _sync_get_router_health(host, user, pwd, port):
     api = connection.get_api()
     
     try:
-        # Get system resources
         resources = api.get_resource('/system/resource').get()[0]
-        # Get active user count
         active_users = api.get_resource('/ip/hotspot/active').get()
         
         return {
@@ -98,27 +108,25 @@ def _sync_get_router_health(host, user, pwd, port):
         connection.disconnect()
 
 
-# ASYNCHRONOUS FASTAPI WRAPPERS
+#   ASYNCHRONOUS FASTAPI WRAPPERS 
 
-async def get_router_credentials(db: AsyncSession, tenant_id: str):
-    """Helper to fetch the active router for a tenant."""
-    # For a multi-router setup, you would pass router_id. 
-    # Assuming 1 primary router per tenant for this logic:
-    stmt = select(Router).where(Router.tenant_id == uuid.UUID(tenant_id), Router.status == 'ONLINE')
-    result = await db.execute(stmt)
-    router = result.scalars().first()
-    
-    if not router:
-        raise ValueError(f"No online router found for tenant {tenant_id}")
-        
-    return router
+async def activate_customer_on_router(tenant_id: str, phone: str, plan_id: str):
+    """
+    Called by M-Pesa background task. 
+    Manages its own DB session to prevent DetachedInstanceErrors.
+    """
+    async with async_session_maker() as db:
+        router_stmt = select(Router).where(Router.tenant_id == UUID(tenant_id), Router.status == 'ONLINE')
+        router = (await db.execute(router_stmt)).scalar_one_or_none()
 
-async def activate_customer_on_router(tenant_id: str, phone: str, plan_profile: str, db: AsyncSession):
-    """
-    Called by the M-Pesa background task after a successful payment.
-    Non-blocking wrapper around the RouterOS activation sequence.
-    """
-    router = await get_router_credentials(db, tenant_id)
+        plan_stmt = select(Plan).where(Plan.id == UUID(plan_id))
+        plan = (await db.execute(plan_stmt)).scalar_one_or_none()
+
+        if not router or not plan:
+            print(f"❌ Provisioning failed: Missing Router or Plan for Tenant {tenant_id}")
+            return
+
+    print(f" Provisioning {phone} on MikroTik ({router.ip_address})...")
     
     await asyncio.to_thread(
         _sync_activate_hotspot_user,
@@ -126,22 +134,46 @@ async def activate_customer_on_router(tenant_id: str, phone: str, plan_profile: 
         user=router.api_username,
         pwd=router.api_password,
         port=router.api_port,
-        customer_phone=phone,
-        plan_profile=plan_profile
+        phone=phone,
+        profile_name=plan.mikrotik_profile_name,
+        validity_hours=plan.validity_hours
     )
 
-async def suspend_customer_on_router(tenant_id: str, phone: str, db: AsyncSession):
+async def suspend_customer_on_router(tenant_id: str, phone: str):
     """
-    Called by the billing expiration scheduler.
-    Non-blocking wrapper around the RouterOS suspension sequence.
+    Utility wrapper for admin bans or kicking a MAC address during a PIN transfer.
     """
-    router = await get_router_credentials(db, tenant_id)
-    
+    async with async_session_maker() as db:
+        router_stmt = select(Router).where(Router.tenant_id == UUID(tenant_id), Router.status == 'ONLINE')
+        router = (await db.execute(router_stmt)).scalar_one_or_none()
+        
+        if not router:
+            return
+
     await asyncio.to_thread(
         _sync_suspend_hotspot_user,
         host=router.ip_address,
         user=router.api_username,
         pwd=router.api_password,
         port=router.api_port,
-        customer_phone=phone# this will be the customer registered number
+        phone=phone
+    )
+
+async def get_router_health_stats(tenant_id: str):
+    """
+    Wrapper for your React Admin Dashboard polling.
+    """
+    async with async_session_maker() as db:
+        router_stmt = select(Router).where(Router.tenant_id == UUID(tenant_id), Router.status == 'ONLINE')
+        router = (await db.execute(router_stmt)).scalar_one_or_none()
+        
+        if not router:
+            return {"error": "Router offline or missing"}
+
+    return await asyncio.to_thread(
+        _sync_get_router_health,
+        host=router.ip_address,
+        user=router.api_username,
+        pwd=router.api_password,
+        port=router.api_port
     )

@@ -1,15 +1,20 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+
+// Import the Context Provider
+import { AuthContext, AuthProvider } from './context/AuthContext';
+
+// Import your Views
 import CaptivePortal from './CaptivePortal';
 import AdminDashboard from './AdminDashboard';
-import AdminLogin from './AdminLogin'; // Import the new login screen
+import AdminLogin from './AdminLogin'; 
 
-//component checks the session before rendering the dashboard
+// Upgraded ProtectedRoute: Checks the JWT Context instead of local sessionStorage
 const ProtectedRoute = ({ children }: { children: JSX.Element }) => {
-  const isAuthenticated = sessionStorage.getItem('isAdmin') === 'true';
+  const auth = useContext(AuthContext);
   
-  if (!isAuthenticated) {
-    // If they aren't logged in, kick them back to the login page
+  if (!auth?.isAuthenticated) {
+    // If they don't have a valid JWT token, kick them back to the login page
     return <Navigate to="/admin/login" replace />;
   }
   
@@ -18,27 +23,31 @@ const ProtectedRoute = ({ children }: { children: JSX.Element }) => {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        {/* PUBLIC ROUTE: The Captive Portal for customers */}
-        <Route path="/" element={<CaptivePortal />} />
+    /* The AuthProvider MUST wrap everything so the token survives page changes */
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          {/* PUBLIC ROUTE: The Captive Portal for customers */}
+          <Route path="/" element={<CaptivePortal />} />
 
-        {/* PUBLIC ROUTE: The Admin Login Screen */}
-        <Route path="/admin/login" element={<AdminLogin />} />
+          {/* PUBLIC ROUTE: The Admin Login Screen */}
+          <Route path="/admin/login" element={<AdminLogin />} />
 
-        {/* SECURE ROUTE: The actual dashboard, wrapped in our protection logic */}
-        <Route 
-          path="/admin" 
-          element={
-            <ProtectedRoute>
-              <AdminDashboard />
-            </ProtectedRoute>
-          } 
-        />
-        
-        {/* Fallback route */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+          {/* SECURE ROUTE: The actual dashboard, wrapped in our JWT protection */}
+          {/* Notice the path is now /admin/dashboard to match our login redirect */}
+          <Route 
+            path="/admin/dashboard" 
+            element={
+              <ProtectedRoute>
+                <AdminDashboard />
+              </ProtectedRoute>
+            } 
+          />
+          
+          {/* Fallback route: Prevents 404 errors by redirecting unknown URLs to home */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

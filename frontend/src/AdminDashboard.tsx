@@ -1,4 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { AuthContext } from "./context/AuthContext";
+import SettingsPanel from "./components/SettingsPanel";
 
 // --- TypeScript Interfaces ---
 interface DashboardStats {
@@ -15,8 +18,9 @@ interface Transaction {
 }
 
 export default function AdminDashboard() {
-  // Removed `useNavigate` to prevent the "<Router> component" error when previewing in isolation
-  
+  const auth = useContext(AuthContext);
+  const navigate = useNavigate();
+
   // --- Tab State ---
   const [activeTab, setActiveTab] = useState<'dashboard' | 'routers' | 'settings'>('dashboard');
 
@@ -26,17 +30,36 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Hardcoded for testing.
-  const TENANT_ID = '11111111-1111-1111-1111-111111111111';
-
-  // --- Data Fetching ---
+  // Protect the route: Kick them out if not authenticated
   useEffect(() => {
+    if (!auth?.isAuthenticated) {
+      navigate('/admin/login');
+    }
+  }, [auth?.isAuthenticated, navigate]);
+
+// --- Data Fetching ---
+  useEffect(() => {
+    if (!auth?.token) return;
+
     const fetchAdminData = async () => {
       try {
+        const fetchOptions = {
+          headers: {
+            'Authorization': `Bearer ${auth.token}`, 
+            'Content-Type': 'application/json'
+          }
+        };
+
+        // Notice the URLs no longer need the tenant ID!
         const [statsRes, txRes] = await Promise.all([
-          fetch(`http://localhost:8000/api/v1/admin/dashboard/stats/${TENANT_ID}`),
-          fetch(`http://localhost:8000/api/v1/admin/transactions/${TENANT_ID}`)
+          fetch(`http://localhost:8000/api/v1/admin/dashboard/stats`, fetchOptions),
+          fetch(`http://localhost:8000/api/v1/admin/transactions`, fetchOptions)
         ]);
+
+        if (statsRes.status === 401 || txRes.status === 401) {
+           auth.logout(); 
+           return;
+        }
 
         if (!statsRes.ok || !txRes.ok) throw new Error('Failed to fetch dashboard data');
 
@@ -44,7 +67,6 @@ export default function AdminDashboard() {
         const txData = await txRes.json();
 
         setStats(statsData);
-        // Ensure transactions is always an array to prevent rendering errors
         setTransactions(Array.isArray(txData.transactions) ? txData.transactions : []);
       } catch (err) {
         setError('Could not connect to the admin API. Ensure FastAPI is running.');
@@ -56,22 +78,27 @@ export default function AdminDashboard() {
     fetchAdminData();
     const interval = setInterval(fetchAdminData, 30000);
     return () => clearInterval(interval);
-  }, []);
-
-  const handleLogout = () => {
-    sessionStorage.removeItem('isAdmin');
-    // Using vanilla window.location avoids the need for a React Router context in standalone mode
-    window.location.href = '/admin/login';
-  };
+  }, [auth?.token]); // Removed auth.user dependency
+  // Prevent rendering the dashboard until auth state is confirmed
+  if (!auth?.isAuthenticated) return null;
 
   if (loading) return <div style={styles.center}>Loading Command Center...</div>;
   if (error) return <div style={{...styles.center, color: 'red'}}>{error}</div>;
+
 
   return (
     <div style={styles.container}>
       {/* --- SIDEBAR NAVIGATION --- */}
       <div style={styles.sidebar}>
         <h2 style={styles.brand}>Wi-Fi Manager</h2>
+        
+        {/* Added Logged in User info */}
+        <div style={styles.userInfo}>
+           <span style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase' }}>Logged in as</span>
+           <br/>
+           <span style={{ fontSize: '13px', color: '#e5e7eb', wordBreak: 'break-all' }}>{auth.user?.email}</span>
+        </div>
+
         <ul style={styles.nav}>
           <li 
             style={activeTab === 'dashboard' ? styles.navItemActive : styles.navItem}
@@ -93,7 +120,7 @@ export default function AdminDashboard() {
           </li>
         </ul>
         <div style={{ marginTop: 'auto' }}>
-          <button onClick={handleLogout} style={styles.logoutBtn}>Log Out</button>
+          <button onClick={() => auth.logout()} style={styles.logoutBtn}>Log Out</button>
         </div>
       </div>
 
@@ -112,7 +139,7 @@ export default function AdminDashboard() {
           )}
         </div>
 
-        {/*  VIEW: DASHBOARD --- */}
+        {/* --- VIEW: DASHBOARD --- */}
         {activeTab === 'dashboard' && (
           <>
             <div style={styles.statsGrid}>
@@ -184,6 +211,11 @@ export default function AdminDashboard() {
 
         {/* --- VIEW: SETTINGS --- */}
         {activeTab === 'settings' && (
+           <SettingsPanel />
+        )}
+
+        {/* --- VIEW: SETTINGS --- */}
+        {activeTab === 'settings' && (
           <div style={styles.card}>
             <h2 style={{ fontSize: '18px', margin: '0 0 16px 0' }}>Tenant Configuration</h2>
             <p style={{ color: '#6b7280', fontSize: '14px', lineHeight: '1.5' }}>
@@ -196,12 +228,14 @@ export default function AdminDashboard() {
   );
 }
 
+
 // --- Styles ---
 const styles: { [key: string]: React.CSSProperties } = {
   center: { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', fontFamily: 'sans-serif' },
   container: { display: 'flex', minHeight: '100vh', backgroundColor: '#f3f4f6', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
   sidebar: { width: '250px', backgroundColor: '#111827', color: '#fff', padding: '24px', display: 'flex', flexDirection: 'column' },
-  brand: { fontSize: '20px', fontWeight: '800', letterSpacing: '1px', marginBottom: '40px', color: '#fff' },
+  brand: { fontSize: '20px', fontWeight: '800', letterSpacing: '1px', marginBottom: '24px', color: '#fff' },
+  userInfo: { marginBottom: '32px', paddingBottom: '16px', borderBottom: '1px solid #374151' },
   nav: { listStyle: 'none', padding: 0, margin: 0 },
   navItem: { padding: '12px 16px', borderRadius: '8px', marginBottom: '8px', cursor: 'pointer', color: '#9ca3af', transition: 'all 0.2s' },
   navItemActive: { padding: '12px 16px', borderRadius: '8px', marginBottom: '8px', cursor: 'pointer', backgroundColor: '#1f2937', color: '#fff', fontWeight: '600' },

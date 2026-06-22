@@ -1,67 +1,79 @@
 import React, { useState, useEffect } from 'react';
+import DeviceTransferForm from "./components/DeviceTransferForm";
 
+// Matches the data coming from our new FastAPI route
 interface InternetPlan {
   id: string;
   name: string;
   price: number;
-  duration: string;
+  validity_hours: number;
+  speed_limit: string;
 }
 
 export default function CaptivePortal() {
-  // Navigation State now includes 'success'
-  const [view, setView] = useState<'plans' | 'payment' | 'success'>('plans');
+  // YOUR ACTUAL TENANT ID
+  const TENANT_ID = "5678a1f1-d40e-43b7-8f5a-801b55796e34"; 
+
+  // Navigation State 
+  const [view, setView] = useState<'plans' | 'payment' | 'success' | 'transfer'>('plans');
   
   // Data State
+  const [packages, setPackages] = useState<InternetPlan[]>([]);
   const [selectedPlan, setSelectedPlan] = useState<InternetPlan | null>(null);
   const [phoneNumber, setPhoneNumber] = useState<string>('');
-  const [checkoutId, setCheckoutId] = useState<string | null>(null); // Tracks the active M-Pesa request
+  const [checkoutId, setCheckoutId] = useState<string | null>(null); 
+  const [transferPin, setTransferPin] = useState<string | null>(null);
   
   // UI State
+  const [fetchingPlans, setFetchingPlans] = useState<boolean>(true);
   const [loading, setLoading] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
-  // Exact UUIDs matching your PostgreSQL database
-  const plans: InternetPlan[] = [
-    { id: 'a1111111-1111-1111-1111-111111111111', name: '1 Hour Quick', price: 10, duration: '1 Hour' },
-    { id: 'a2222222-2222-2222-2222-222222222222', name: '4 Hours Pass', price: 20, duration: '4 Hours' },
-    { id: 'a3333333-3333-3333-3333-333333333333', name: '24 Hours Daily', price: 40, duration: '24 Hours' },
-    { id: 'a4444444-4444-4444-4444-444444444444', name: 'Weekly Pass', price: 200, duration: '7 Days' },
-    { id: 'a5555555-5555-5555-5555-555555555555', name: 'Bi-Weekly', price: 300, duration: '14 Days' },
-    { id: 'a6666666-6666-6666-6666-666666666666', name: 'Monthly Max', price: 650, duration: '30 Days' },
-  ];
+  // --- 1. FETCH LIVE PLANS ON LOAD ---
+  useEffect(() => {
+    fetch(`http://localhost:8000/api/v1/settings/tenant/${TENANT_ID}/plans`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.plans) {
+          setPackages(data.plans);
+        }
+        setFetchingPlans(false);
+      })
+      .catch(err => {
+        console.error("Failed to fetch plans:", err);
+        setFetchingPlans(false);
+      });
+  }, []);
 
-  // --- THE POLLING ENGINE ---
+  // --- 2. THE M-PESA POLLING ENGINE ---
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
-    // Only run the poll if we have a checkoutId and are actively on the payment screen
     if (checkoutId && view === 'payment') {
       intervalId = setInterval(async () => {
         try {
-          // Ask FastAPI for the exact status of this specific transaction
           const res = await fetch(`http://localhost:8000/api/v1/mpesa/status/${checkoutId}`);
           
           if (res.ok) {
             const data = await res.json();
             
             if (data.status === 'COMPLETED') {
-              setCheckoutId(null); // Stop polling
+              setCheckoutId(null); 
               setLoading(false);
-              setView('success');  // Transition to the connected screen
+              setTransferPin(data.transfer_pin); 
+              setView('success');  
             } else if (data.status === 'FAILED' || data.status === 'CANCELLED') {
-              setCheckoutId(null); // Stop polling
+              setCheckoutId(null); 
               setLoading(false);
               setStatusMessage({ type: 'error', text: 'Payment failed or was cancelled. Please try again.' });
             }
-            // If status is 'PENDING', the loop just quietly continues on the next tick
           }
         } catch (error) {
           console.error("Polling error: Lost connection to backend.", error);
         }
-      }, 3000); // Ping the backend every 3 seconds
+      }, 3000); 
     }
 
-    // Cleanup function: If the component unmounts or state changes, kill the timer immediately to prevent memory leaks.
     return () => clearInterval(intervalId);
   }, [checkoutId, view]);
 
@@ -74,7 +86,7 @@ export default function CaptivePortal() {
   const handleBackToPlans = () => {
     setView('plans');
     setStatusMessage(null);
-    setCheckoutId(null); // Abort polling if they back out
+    setCheckoutId(null); 
   };
 
   const handlePayment = async (e: React.FormEvent) => {
@@ -101,7 +113,7 @@ export default function CaptivePortal() {
         body: JSON.stringify({
           phone_number: formattedPhone,
           plan_id: selectedPlan.id,
-          tenant_id: '11111111-1111-1111-1111-111111111111' 
+          tenant_id: TENANT_ID // Dynamically injects your real tenant ID
         }),
       });
 
@@ -109,17 +121,10 @@ export default function CaptivePortal() {
 
       if (response.ok) {
         setStatusMessage({ type: 'success', text: 'STK Push sent! Please enter your M-Pesa PIN on your phone.' });
-        // Start the polling engine by setting the ID returned from Safaricom
         setCheckoutId(data.checkout_id); 
       } else {
         let errorMessage = 'Failed to initiate payment. Please try again.';
-        if (data.detail) {
-          if (typeof data.detail === 'string') {
-            errorMessage = data.detail;
-          } else if (Array.isArray(data.detail)) {
-            errorMessage = `Validation Error: ${data.detail[0].loc.join(' -> ')} - ${data.detail[0].msg}`;
-          }
-        }
+        if (data.detail && typeof data.detail === 'string') errorMessage = data.detail;
         setStatusMessage({ type: 'error', text: errorMessage });
         setLoading(false);
       }
@@ -133,30 +138,47 @@ export default function CaptivePortal() {
     <div style={styles.container}>
       <div style={styles.card}>
         
-        {/* VIEW 1: PLANS */}
+        {/* --- VIEW 1: PLANS --- */}
         {view === 'plans' && (
           <div>
             <div style={styles.header}>
               <h1 style={styles.title}>HIGH-SPEED WI-FI</h1>
               <p style={styles.subtitle}>Select a plan to get instant internet access.</p>
             </div>
-            <div style={styles.planGrid}>
-              {plans.map((plan) => (
-                <div 
-                  key={plan.id} 
-                  onClick={() => handlePlanClick(plan)}
-                  style={styles.planCard}
-                >
-                  <div style={styles.planName}>{plan.name}</div>
-                  <div style={styles.planDuration}>{plan.duration}</div>
-                  <div style={styles.planPrice}>KES {plan.price}</div>
-                </div>
-              ))}
+            
+            {fetchingPlans ? (
+               <div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>Loading active packages...</div>
+            ) : packages.length === 0 ? (
+               <div style={{ textAlign: 'center', padding: '40px', color: '#9b1c1c' }}>No internet plans available currently.</div>
+            ) : (
+              <div style={styles.planGrid}>
+                {packages.map((plan) => (
+                  <div 
+                    key={plan.id} 
+                    onClick={() => handlePlanClick(plan)}
+                    style={styles.planCard}
+                  >
+                    <div style={styles.planName}>{plan.name}</div>
+                    <div style={styles.planDuration}>{plan.validity_hours} Hours</div>
+                    <div style={styles.planPrice}>KES {plan.price}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            <div style={{ marginTop: '28px', textAlign: 'center', borderTop: '1px solid #eee', paddingTop: '20px' }}>
+              <button 
+                onClick={() => setView('transfer')} 
+                style={styles.textButton}
+              >
+                Already have an active session? <br/>
+                <span style={{color: '#1e429f', fontWeight: 'bold'}}>Transfer to this device →</span>
+              </button>
             </div>
           </div>
         )}
 
-        {/* VIEW 2: PAYMENT */}
+        {/* --- VIEW 2: PAYMENT --- */}
         {view === 'payment' && selectedPlan && (
           <div>
             <button onClick={handleBackToPlans} style={styles.backButton} disabled={loading}>
@@ -211,7 +233,17 @@ export default function CaptivePortal() {
           </div>
         )}
 
-        {/* VIEW 3: SUCCESS (Auto-Connection) */}
+        {/* --- VIEW 3: DEVICE TRANSFER UI --- */}
+        {view === 'transfer' && (
+          <div>
+            <button onClick={handleBackToPlans} style={styles.backButton}>
+              ← Back to Packages
+            </button>
+            <DeviceTransferForm /> 
+          </div>
+        )}
+
+        {/* --- VIEW 4: SUCCESS --- */}
         {view === 'success' && (
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
             <div style={{ fontSize: '48px', marginBottom: '16px' }}>✅</div>
@@ -219,10 +251,24 @@ export default function CaptivePortal() {
             <p style={{ color: '#333', fontSize: '15px', lineHeight: '1.5', margin: '0 0 24px 0' }}>
               Your device has been authorized on the network. You are now securely connected to the internet.
             </p>
+
+            {transferPin && (
+              <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', padding: '16px', borderRadius: '8px', marginBottom: '24px' }}>
+                <p style={{ fontSize: '12px', color: '#166534', fontWeight: 'bold', textTransform: 'uppercase', marginBottom: '4px' }}>Your Transfer PIN</p>
+                <p style={{ fontSize: '24px', color: '#15803d', fontFamily: 'monospace', fontWeight: 'bold', letterSpacing: '2px', margin: 0 }}>
+                  {transferPin}
+                </p>
+                <p style={{ fontSize: '12px', color: '#166534', marginTop: '8px', lineHeight: '1.4' }}>
+                  Save this PIN. You can use it to switch your active internet session to another laptop or phone without paying again.
+                </p>
+              </div>
+            )}
+
             <button 
               onClick={() => {
                 setView('plans');
                 setPhoneNumber('');
+                setTransferPin(null);
               }} 
               style={{...styles.button, width: '100%'}}
             >
@@ -239,6 +285,7 @@ export default function CaptivePortal() {
   );
 }
 
+// --- STYLES ---
 const styles: { [key: string]: React.CSSProperties } = {
   container: { display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', backgroundColor: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', padding: '20px' },
   card: { backgroundColor: '#fff', borderRadius: '16px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)', width: '100%', maxWidth: '440px', padding: '32px 24px', boxSizing: 'border-box' },
@@ -251,6 +298,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   planDuration: { fontSize: '11px', color: '#888', marginBottom: '8px' },
   planPrice: { fontSize: '15px', fontWeight: '800', color: '#000' },
   backButton: { background: 'none', border: 'none', color: '#1e429f', fontSize: '14px', fontWeight: '600', cursor: 'pointer', padding: 0, marginBottom: '20px' },
+  textButton: { background: 'none', border: 'none', color: '#666', fontSize: '14px', cursor: 'pointer', padding: '8px', width: '100%', lineHeight: '1.5' },
   summaryCard: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', backgroundColor: '#f9fafb', borderRadius: '8px', border: '1px solid #e5e7eb', marginBottom: '24px' },
   summaryTitle: { fontSize: '15px', fontWeight: '600', color: '#111' },
   summaryPrice: { fontSize: '16px', fontWeight: '800', color: '#1e429f' },
